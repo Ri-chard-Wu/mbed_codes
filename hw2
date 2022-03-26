@@ -1,0 +1,150 @@
+
+
+
+
+
+// HW 2
+
+#include "EventQueue.h"
+#include "ThisThread.h"
+#include "mbed.h"
+#include "uLCD_4DGL.h"
+
+using namespace std::chrono;
+const double amplitude = 1.0f;
+const float V_ref = 3.;
+const double scaling = 65535. / V_ref;
+bool GenWave = false;
+
+AnalogIn Ain(A0);     // Sampling
+AnalogOut aout(PA_4); // Signal output
+
+InterruptIn btn_A(PB_2), btn_B(PA_15);
+DigitalOut led2(LED2);
+Thread t1, t2, t3;
+
+uLCD_4DGL uLCD(D1, D0, D2);
+Timer debounce;
+EventQueue queue(32 * EVENTS_EVENT_SIZE);
+
+int i_Gen = 0, i_Sam = 0, i_transfer = 0;
+
+// f()
+int frequency = 100;
+int N = 30;
+float dt = 1000000. / (frequency * N);
+float r0 = 0.1; // 10%
+float r1 = 0.7; // 70%
+float slope0 = V_ref / (N * r0);
+float slope1 = V_ref / (N * (r1 - 1)); // smaller than 0.
+const int capacity = 256;
+float ADCdata[capacity];
+int sample = 0;
+
+
+
+void Update_uLCD_Wave_Generating();
+void Update_uLCD_Transferring();
+void Update_uLCD_btn_B_ISR();
+void Update_uLCD_btn_A_ISR();
+void Wave_Sam();
+void f(int n);
+void Wave_Gen();
+void send();
+void btn_A_ISR();
+void btn_B_ISR();
+
+int main() {
+  debounce.start();
+  btn_A.rise(&btn_A_ISR);
+  btn_B.rise(&btn_B_ISR);
+
+  t1.start(&Wave_Gen);
+  t2.start(&Wave_Sam);
+  t3.start(callback(&queue, &EventQueue::dispatch_forever));
+  while (true) {
+    ThisThread::sleep_for(500ms);
+  }
+}
+
+
+void Wave_Gen() {
+
+  while (1) {
+    if (GenWave) {
+      f(i_Gen++);
+      wait_us((int)dt);
+    } else {
+      i_Gen = 0;
+    }
+  }
+}
+
+
+void f(int n){ // N at least > 300.
+    
+    n = n%N;
+
+    if(n < r0*N) sample = (uint16_t) (scaling * slope0 * n);
+    else if(n > r1*N) sample = (uint16_t)(scaling * (V_ref + slope1 * (n - r1*N))); 
+    aout.write_u16(sample);
+   
+ 
+
+}
+
+void Wave_Sam() {
+  while (1) {
+    if (GenWave) {
+      if (i_Sam < capacity) {
+        ADCdata[i_Sam++] = Ain;
+        ThisThread::sleep_for(1ms);
+      }
+
+    } else {
+      i_Sam = 0;
+    }
+  }
+}
+
+
+
+void btn_A_ISR() {
+  if (duration_cast<milliseconds>(debounce.elapsed_time()).count() > 1000) {
+    queue.call(&Update_uLCD_btn_A_ISR);
+    GenWave = true;
+    queue.call(&Update_uLCD_Wave_Generating);
+
+    debounce.reset();
+  }
+}
+
+void btn_B_ISR() {
+  if (duration_cast<milliseconds>(debounce.elapsed_time()).count() > 1000) {
+    queue.call(&Update_uLCD_btn_B_ISR);
+    GenWave = false;
+    i_transfer = i_Sam;
+
+    queue.call(&Update_uLCD_Transferring);
+    queue.call(&send);
+
+    debounce.reset();
+  }
+}
+
+void send() {
+  for (int i = 0; i < i_transfer; i++) {
+    printf("%f\r\n", ADCdata[i]);
+    ThisThread::sleep_for(100ms);
+  }
+}
+
+
+void Update_uLCD_btn_A_ISR() { uLCD.printf("\nInterrupt A Detected\n"); }
+
+void Update_uLCD_btn_B_ISR() { uLCD.printf("\nInterrupt B Detected\n"); }
+
+void Update_uLCD_Transferring() { uLCD.printf("\nTransferring...\n"); }
+
+void Update_uLCD_Wave_Generating() { uLCD.printf("\nGenerating Wave...\n"); }
+
